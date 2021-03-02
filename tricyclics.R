@@ -1,280 +1,506 @@
-# Application of Bayesian meta-analysis
-# to the Cochrane review of tricyclics for children
+# R and Stan code accompanying the paper "A taxonomy of thresholds 
+# used to dichotomise outcomes, and their inclusion in Bayesian meta-analysis"
 #
+# Case study application to the Cochrane review of tricyclic
+# anti-depressants in children
 #
-# this version includes all dichotomised trials so that we can compare
-# their parameters against their true means
-#
-# No adjustment for skewed / constrained outcomes is applied.
-# Assumptions in the dichotomoised trial Hughes (1990):
-#	correlation=0.3, SD baseline=6.6, endpoint=10.6
-
 
 library(meta)
 library(rstan)
+options(mc.cores=4)
+rstan_options(auto_write=TRUE)
 
-md<-2 # dichotomised trials
+# All stats
+label<-c("Bernstein1990",
+         "Bernstein2000",
+         "Birmaher1998BDI",
+         "Birmaher1998HDRS",
+         "Geller8992CDRS",
+         "Geller8992KSADSP",
+         "Geller1990",
+         "Hughes1990",
+         "Kashani1984",
+         "Keller2001",
+         "Klein1998",
+         "Kramer1981",
+         "Kutcher1994",
+         "Kye1996",
+         "Petti1982",
+         "PuigAntich1987")
+study_id<-c(1,2,3,3,4,4,5,6,7,8,9,10,11,12,13,14)
+# N used in mean in each group
+n_mean_t<-c(9,31,13,13,26,26,12,13,5,88,18,10,17,12,3,16)
+n_mean_c<-c(7,32,14,14,24,24,19,14,4,85,18,10,25,10,3,22)
+# baseline mean in placebo group:
+m0_c<-c(36.5,52.5,24.1,21.9,
+        49.6,3.89,51.4,NA,
+        27.75,18.97,21.33,25.2,
+        23.77,15.3,20.67,3.0)
+# baseline SD in placebo group:
+s0_c<-c(3.4,10.8,9.8,9.11,
+        4.6,0.5,3.7,NA,
+        4.35,4.1,5.2,0.8,
+        5.31,6.0,22.3,0.66)
+# baseline mean in tricyclics group:
+m0_t<-c(41.0,46.8,29.3,22.9,
+        49.9,3.98,51.3,NA,
+        25.6,18.11,21.44,16.2,
+        22.63,12.3,41.33,3.1)
+# baseline SD in tricyclics group:
+s0_t<-c(12.2,9.5,12.6,5.11,
+        4.2,0.42,4.4,NA,
+        2.41,4.17,3.7,1.2,
+        5.17,5.6,19.3,0.43)
+# endpoint mean in placebo group:
+m_c<-c(30.1,45.7,10.1,8.6,
+       32.0,2.2,37.8,NA,
+       23.75,9.88,14.61,22.7,
+       13.42,7.8,15.33,1.9)
+# endpoint SD in placebo group:
+s_c<-c(NA,16.5,11.1,11.5,
+       9.8,0.78,9.1,NA,
+       5.56,7.74,2.1,0.7,
+       8.43,5.5,15.04,0.86)
+# endpoint mean in tricyclics group:
+m_t<-c(29.5,34.6,10.1,7.7,
+       32.9,2.41,34.7,NA,
+       18.4,9.2,10.83,10.3,
+       12.68,4.7,7.0,1.9)
+# endpoint SD in tricyclics group:
+s_t<-c(NA,8.9,11.8,8.0,
+       11.4,0.81,7.8,NA,
+       3.29,7.85,2.1,0.4,
+       8.68,6.3,8.19,0.68)
+# N used in responders (risk) in placebo group:
+n_risk_c<-c(NA,NA,14,14,
+            24,NA,19,14,
+            NA,87,18,NA,
+            25,10,NA,NA)
+# responders in placebo group:
+r_c<-c(NA,NA,5,5,
+       4,NA,4,7,
+       NA,40,9,NA,
+       9,9,NA,NA)
+# N used in responders (risk) in tricyclics group:
+n_risk_t<-c(NA,NA,13,13,
+            26,NA,11,13,
+            NA,94,18,NA,
+            17,12,NA,NA)
+# responders in tricyclics groups:
+r_t<-c(NA,NA,5,5,
+       8,NA,1,6,
+       NA,47,13,NA,
+       8,11,NA,NA)
+# row numbers for certain conditions of dichotomisation:
+dichot_only<-8
+dichot_and_mean<-c(3,4,5,7,10,11,13,14)
+# row numbers for missing stats
+missing_s_endpoint<-1
+# outcomes (1=CDRS, 2=HDRS, 3=BID, 4=BDI, 5=K-SADS-P, 6=DACL)
+outcomes<-c(1,1,4,2,
+            1,5,1,1,
+            3,2,2,6,
+            2,2,3,5)
+# assemble data frame
+datamat<-data.frame(label,
+                    study_id,
+                    model.matrix(~0+as.factor(outcomes)),
+                    n_mean_c,n_mean_t,
+                    m0_c,s0_c,m0_t,s0_t,
+                    m_c,s_c,m_t,s_t,
+                    n_risk_c,r_c,
+                    n_risk_t,r_t)
+colnames(datamat)[3:8]<-c("CDRS","HDRS","BID","BDI","KSADSP","DACL")
 
-# starting with only the CDRS trials (4):
-nc_cdrs<-c(7,32,24)
-nt_cdrs<-c(9,31,26)
-mc0_cdrs<-c(36.5,52.5,49.6)
-mt0_cdrs<-c(41,46.8,49.9)
-sc0_cdrs<-c(3.4,10.8,4.6)
-st0_cdrs<-c(12.2,9.5,4.2)
-mc1_cdrs<-c(30.1,45.7,32)
-mt1_cdrs<-c(29.5,34.6,32.9)
-sc1_cdrs<-c(NA,16.5,9.8)
-st1_cdrs<-c(NA,8.9,11.4)
-rc1<-c(4,7)
-rt1<-c(1,6)
-nrc1<-c(19,14)
-nrt1<-c(11,13)
+# imputation of Bernstein 1990's endpoint SDs.
+# plot(c(log(as.numeric(datamat[-c(1,8),'s0_c'])),
+#        log(as.numeric(datamat[-c(1,8),'s0_t']))),
+#      c(log(as.numeric(datamat[-c(1,8),'s_c'])),
+#        log(as.numeric(datamat[-c(1,8),'s_t']))),
+#      xlab='baseline log-SDs',ylab='endpoint log-SDs')
+# abline(a=0,b=1)
+# abline(v=log(as.numeric(datamat[1,'s0_c'])))
+# abline(v=log(as.numeric(datamat[1,'s0_t'])))
+# lmsd<-lm(c(log(as.numeric(datamat[-c(1,8),'s_c'])),
+#            log(as.numeric(datamat[-c(1,8),'s_t']))) ~
+#            c(log(as.numeric(datamat[-c(1,8),'s0_c'])),
+#              log(as.numeric(datamat[-c(1,8),'s0_t']))))
+# abline(a=lmsd$coefficients[1],b=lmsd$coefficients[2],lty=3)
+# so we single-impute with the baseline SDs
+datamat[missing_s_endpoint,'s_c']<-
+  datamat[missing_s_endpoint,'s0_c']
+datamat[missing_s_endpoint,'s_t']<-
+  datamat[missing_s_endpoint,'s0_t']
 
-# single imputation! 
-# later, try data synthesis
-sc1_cdrs[1]<-mean(sc1_cdrs[2:3])
-st1_cdrs[1]<-mean(st1_cdrs[2:3])
+# exploratory dataviz
+# viz<-datamat[order(outcomes),]
+# plot(3*(1:NROW(viz)),viz$m0_c,ylim=c(0,80))
+# points(3*(1:NROW(viz)),viz$m_c,pch=19)
+# points(3*(1:NROW(viz))+0.6,viz$m0_t,col='#b62525')
+# points(3*(1:NROW(viz))+0.6,viz$m_t,pch=19,col='#b62525')
 
-# HDRS trials (5)
-nc_hdrs<-c(14,85,18,25,10)
-nt_hdrs<-c(13,88,18,17,12)
-mc0_hdrs<-c(21.9,18.97,21.33,23.77,15.3)
-mt0_hdrs<-c(22.9,18.11,21.44,22.63,12.3)
-sc0_hdrs<-c(9.11,4.104,5.2,5.31,6.0)
-st0_hdrs<-c(5.11,4.169,3.7,5.17,5.6)
-mc1_hdrs<-c(8.6,9.88,14.61,13.42,7.8)
-mt1_hdrs<-c(7.7,9.20,10.83,12.68,4.7)
-sc1_hdrs<-c(11.5,7.742,2.1,8.43,5.5)
-st1_hdrs<-c( 8.0,7.853,2.1,8.68,6.3)
-
-# BID trials (2)
-nc_bid<-c(4,3)
-nt_bid<-c(5,3)
-mc0_bid<-c(27.75,20.67)
-mt0_bid<-c(25.6,41.33)
-sc0_bid<-c(4.35,22.3)
-st0_bid<-c(2.41,19.3)
-mc1_bid<-c(23.75,15.33)
-mt1_bid<-c(18.4,7)
-sc1_bid<-c(5.56,15.04)
-st1_bid<-c(3.29,8.19)
-
-# K-SADS-P trial (1)
-nc_ksadsp<-22
-nt_ksadsp<-16
-mc0_ksadsp<-3
-mt0_ksadsp<-3.1
-sc0_ksadsp<-0.66
-st0_ksadsp<-0.43
-mc1_ksadsp<-1.9
-mt1_ksadsp<-1.9
-sc1_ksadsp<-0.86
-st1_ksadsp<-0.68
-
-madata<-list(nc_cdrs=nc_cdrs,nt_cdrs=nt_cdrs,
-		mc0_cdrs=mc0_cdrs,mt0_cdrs=mt0_cdrs,
-		mc1_cdrs=mc1_cdrs,mt1_cdrs=mt1_cdrs,
-		sc0_cdrs=sc0_cdrs,st0_cdrs=st0_cdrs,
-		sc1_cdrs=sc1_cdrs,st1_cdrs=st1_cdrs,
-		rc1=rc1,rt1=rt1,nrc1=nrc1,nrt1=nrt1,
-		nc_hdrs=nc_hdrs,nt_hdrs=nt_hdrs,
-		mc0_hdrs=mc0_hdrs,mt0_hdrs=mt0_hdrs,
-		mc1_hdrs=mc1_hdrs,mt1_hdrs=mt1_hdrs,
-		sc0_hdrs=sc0_hdrs,st0_hdrs=st0_hdrs,
-		sc1_hdrs=sc1_hdrs,st1_hdrs=st1_hdrs,
-		nc_bid=nc_bid,nt_bid=nt_bid,
-		mc0_bid=mc0_bid,mt0_bid=mt0_bid,
-		mc1_bid=mc1_bid,mt1_bid=mt1_bid,
-		sc0_bid=sc0_bid,st0_bid=st0_bid,
-		sc1_bid=sc1_bid,st1_bid=st1_bid,
-		nc_ksadsp=nc_ksadsp,nt_ksadsp=nt_ksadsp,
-		mc0_ksadsp=mc0_ksadsp,mt0_ksadsp=mt0_ksadsp,
-		mc1_ksadsp=mc1_ksadsp,mt1_ksadsp=mt1_ksadsp,
-		sc0_ksadsp=sc0_ksadsp,st0_ksadsp=st0_ksadsp,
-		sc1_ksadsp=sc1_ksadsp,st1_ksadsp=st1_ksadsp,
-		md=md)
-
-mainits<-list(
-		init1=list(mu0=50,dc=-8,dt=-15,sdu=12,
-			     	u_cdrs=c(2,-5,5),
-				ux=c(-1,0.4),
-				u_hdrs=c(-5,-3,-1,4,7),
-				u_bid=c(-4,4),
-				u_ksadsp=2,
-				hdrs=0.7,bid=0.6,ksadsp=0.07),
-		init2=list(mu0=40,dc=-11,dt=-14,sdu=8,
-			     	u_cdrs=c(-2,5,-5),
-				ux=c(1,1),
-				u_hdrs=c(-1,4,-3,2,5),
-				u_bid=c(4,-4),
-				u_ksadsp=-2,
-				hdrs=0.6,bid=0.7,ksadsp=0.05))
-
-# Stan model
-mamodel<-'
-	data {
-		real mc0_cdrs[3];
-		real mt0_cdrs[3];
-		real mc1_cdrs[3];
-		real mt1_cdrs[3];
-		real<lower=0> sc0_cdrs[3];
-		real<lower=0> st0_cdrs[3];
-		real<lower=0> sc1_cdrs[3];
-		real<lower=0> st1_cdrs[3];
-		int<lower=0> nc_cdrs[3];
-		int<lower=0> nt_cdrs[3];
-		real mc0_hdrs[5];
-		real mt0_hdrs[5];
-		real mc1_hdrs[5];
-		real mt1_hdrs[5];
-		real<lower=0> sc0_hdrs[5];
-		real<lower=0> st0_hdrs[5];
-		real<lower=0> sc1_hdrs[5];
-		real<lower=0> st1_hdrs[5];
-		int<lower=0> nc_hdrs[5];
-		int<lower=0> nt_hdrs[5];
-		real mc0_bid[2];
-		real mt0_bid[2];
-		real mc1_bid[2];
-		real mt1_bid[2];
-		real<lower=0> sc0_bid[2];
-		real<lower=0> st0_bid[2];
-		real<lower=0> sc1_bid[2];
-		real<lower=0> st1_bid[2];
-		int<lower=0> nc_bid[2];
-		int<lower=0> nt_bid[2];
-		real mc0_ksadsp;
-		real mt0_ksadsp;
-		real mc1_ksadsp;
-		real mt1_ksadsp;
-		real<lower=0> sc0_ksadsp;
-		real<lower=0> st0_ksadsp;
-		real<lower=0> sc1_ksadsp;
-		real<lower=0> st1_ksadsp;
-		int<lower=0> nc_ksadsp;
-		int<lower=0> nt_ksadsp;
-		int<lower=0> rc1[2];
-		int<lower=0> rt1[2];
-		int<lower=0> nrc1[2];
-		int<lower=0> nrt1[2];
-	}
-	transformed data {
-		real<lower=0> sec0_cdrs[3];
-		real<lower=0> set0_cdrs[3];
-		real<lower=0> set1_cdrs[3];
-		real<lower=0> sec1_cdrs[3];
-		real<lower=0> sec0_hdrs[5];
-		real<lower=0> set0_hdrs[5];
-		real<lower=0> set1_hdrs[5];
-		real<lower=0> sec1_hdrs[5];
-		real<lower=0> sec0_bid[2];
-		real<lower=0> set0_bid[2];
-		real<lower=0> set1_bid[2];
-		real<lower=0> sec1_bid[2];
-		real<lower=0> sec0_ksadsp;
-		real<lower=0> set0_ksadsp;
-		real<lower=0> set1_ksadsp;
-		real<lower=0> sec1_ksadsp;
-		for (i in 1:3) sec0_cdrs[i] = sc0_cdrs[i]/sqrt(nc_cdrs[i]); 
-		for (i in 1:3) set0_cdrs[i] = st0_cdrs[i]/sqrt(nt_cdrs[i]); 
-		for (i in 1:3) set1_cdrs[i] = st1_cdrs[i]/sqrt(nt_cdrs[i]); 
-		for (i in 1:3) sec1_cdrs[i] = sc1_cdrs[i]/sqrt(nc_cdrs[i]); 
-		for (i in 1:5) sec0_hdrs[i] = sc0_hdrs[i]/sqrt(nc_hdrs[i]); 
-		for (i in 1:5) set0_hdrs[i] = st0_hdrs[i]/sqrt(nt_hdrs[i]); 
-		for (i in 1:5) set1_hdrs[i] = st1_hdrs[i]/sqrt(nt_hdrs[i]); 
-		for (i in 1:5) sec1_hdrs[i] = sc1_hdrs[i]/sqrt(nc_hdrs[i]); 
-		for (i in 1:2) sec0_bid[i] = sc0_bid[i]/sqrt(nc_bid[i]); 
-		for (i in 1:2) set0_bid[i] = st0_bid[i]/sqrt(nt_bid[i]); 
-		for (i in 1:2) set1_bid[i] = st1_bid[i]/sqrt(nt_bid[i]); 
-		for (i in 1:2) sec1_bid[i] = sc1_bid[i]/sqrt(nc_bid[i]); 
-		sec0_ksadsp = sc0_ksadsp/sqrt(nc_ksadsp); 
-		set0_ksadsp = st0_ksadsp/sqrt(nt_ksadsp); 
-		set1_ksadsp = st1_ksadsp/sqrt(nt_ksadsp); 
-		sec1_ksadsp = sc1_ksadsp/sqrt(nc_ksadsp); 
-	}
-	parameters {
-		real ux[2]; // random effect for the dichotomised trials
-		real<lower=0> sdu;
-		real mu0; // global mean for both groups at baseline
-		real u_cdrs[3]; 
-		real u_hdrs[5]; 
-		real u_bid[2]; 
-		real u_ksadsp; 
-		real dc; // global mean of control change
-		real dt; // global mean of treatment change
-		real<lower=0> hdrs;
-		real<lower=0> bid;
-		real<lower=0> ksadsp;
-	}
-	transformed parameters {
-//		real<lower=0> sdu; // heterogeneity SD
-		real<lower=0, upper=1> riskt[2]; // risk of response tx
-		real<lower=0, upper=1> riskc[2]; // risk of response control
-		real diff; // dt-dc
-		real mu_cdrs[3]; // study means for monitoring
-		real mu_hdrs[5];
-		real mu_bid[2];
-		real mu_ksadsp;
-		real mu_x[2];
-		for (i in 1:2) riskt[i] = Phi_approx(-((-0.4472*(mu0+ux[i]))+(0.8944*(mu0+ux[i]+dt)))/9.0273);
-		for (i in 1:2) riskc[i] = Phi_approx(-((-0.4472*(mu0+ux[i]))+(0.8944*(mu0+ux[i]+dc)))/9.0273);
-		diff = (dt-dc);
-		for (i in 1:3) mu_cdrs[i] = mu0+u_cdrs[i];
-		for (i in 1:5) mu_hdrs[i] = hdrs*(mu0+u_hdrs[i]);
-		for (i in 1:2) mu_bid[i] = bid*(mu0+u_bid[i]);
-		mu_ksadsp = ksadsp*(mu0+u_ksadsp);
-		for (i in 1:2) mu_x[i] = mu0+ux[i];
-	}
-	model {
-		for (i in 1:3) u_cdrs[i] ~ normal(0,sdu);
-		for (i in 1:5) u_hdrs[i] ~ normal(0,sdu);
-		for (i in 1:2) u_bid[i] ~ normal(0,sdu);
-		u_ksadsp ~ normal(0,sdu);
-		for (i in 1:2) ux[i] ~ normal(0,sdu);
-		for (i in 1:3) mc0_cdrs[i] ~ normal(mu0+u_cdrs[i],sec0_cdrs[i]);
-		for (i in 1:3) mt0_cdrs[i] ~ normal(mu0+u_cdrs[i],set0_cdrs[i]);
-		for (i in 1:3) mc1_cdrs[i] ~ normal(mu0+u_cdrs[i]+dc,sec1_cdrs[i]);
-		for (i in 1:3) mt1_cdrs[i] ~ normal(mu0+u_cdrs[i]+dt,set1_cdrs[i]);
-		for (i in 1:5) mc0_hdrs[i] ~ normal(hdrs*(mu0+u_hdrs[i]),sec0_hdrs[i]);
-		for (i in 1:5) mt0_hdrs[i] ~ normal(hdrs*(mu0+u_hdrs[i]),set0_hdrs[i]);
-		for (i in 1:5) mc1_hdrs[i] ~ normal(hdrs*(mu0+u_hdrs[i]+dc),sec1_hdrs[i]);
-		for (i in 1:5) mt1_hdrs[i] ~ normal(hdrs*(mu0+u_hdrs[i]+dt),set1_hdrs[i]);
-		for (i in 1:2) mc0_bid[i] ~ normal(bid*(mu0+u_bid[i]),sec0_bid[i]);
-		for (i in 1:2) mt0_bid[i] ~ normal(bid*(mu0+u_bid[i]),set0_bid[i]);
-		for (i in 1:2) mc1_bid[i] ~ normal(bid*(mu0+u_bid[i]+dc),sec1_bid[i]);
-		for (i in 1:2) mt1_bid[i] ~ normal(bid*(mu0+u_bid[i]+dt),set1_bid[i]);
-		mc0_ksadsp ~ normal(ksadsp*(mu0+u_ksadsp),sec0_ksadsp);
-		mt0_ksadsp ~ normal(ksadsp*(mu0+u_ksadsp),set0_ksadsp);
-		mc1_ksadsp ~ normal(ksadsp*(mu0+u_ksadsp+dc),sec1_ksadsp);
-		mt1_ksadsp ~ normal(ksadsp*(mu0+u_ksadsp+dt),set1_ksadsp);
-		for (i in 1:2) rc1[i] ~ binomial(nrc1[i],riskc[i]);
-		for (i in 1:2) rt1[i] ~ binomial(nrt1[i],riskt[i]);
-		mu0 ~ normal(45,9);
-		dc ~ normal(-5,10);
-		dt ~ normal(-13,10);
-		sdu ~ cauchy(0,5);
-		hdrs ~ uniform(0,5);
-		bid ~ uniform(0,5);
-		ksadsp ~ uniform(0,5);
-	}
+stancode<-
 '
-	
-# work on basis that SD at baseline is 6.6 and at endpoint is 10.6
-# and correlation is 0.3
+data {
+  int n_m; // number of rows contributing means to likelihood
+  int n_p; // number of rows contributing proportions to likelihood
+  int n; // n_p+n_m, total rows
+  int m; // number of studies
+  int study_m[n_m]; // study ID (for random effect)
+  int study_p[n_p]; // study ID (for random effect)
+  real phi; // rotation angle for relative ratio dichotomisation (radians)
+  int n_mean_c[n_m]; // n in control group
+  int n_mean_t[n_m]; // n in treatment group
+  real m0_c[n_m]; // baseline mean in control
+  real m_c[n_m]; // endpoint mean in control
+  real m0_t[n_m]; // baseline mean in treatment
+  real m_t[n_m]; // endpoint mean in treatment
+  real s0_c[n_m]; // baseline SD in control
+  real s_c[n_m]; // endpoint SD in control
+  real s0_t[n_m]; // baseline SD in treatment
+  real s_t[n_m]; // endpoint SD in treatment
+  int n_risk_c[n_p]; // n in control group
+  int n_risk_t[n_p]; // n in treatment group
+  int r_c[n_p]; // responders in control group
+  int r_t[n_p]; // responders in treatment group
+  real cdrs_m[n_m]; // indicator variable for CDRS
+  real hdrs_m[n_m]; // indicator variable for HDRS
+  real bdi_m[n_m]; // indicator variable for BDI
+  real bid_m[n_m]; // indicator variable for BID
+  real ksadsp_m[n_m]; // indicator variable for K-SADS-P
+  real dacl_m[n_m]; // indicator variable for DACL
+  real cdrs_p[n_p]; // indicator variable for CDRS
+  real hdrs_p[n_p]; // indicator variable for HDRS
+  real bdi_p[n_p]; // indicator variable for BDI
+  real bid_p[n_p]; // indicator variable for BID
+  real ksadsp_p[n_p]; // indicator variable for K-SADS-P
+  real dacl_p[n_p]; // indicator variable for DACL
+}
 
-# fit Stan model
-fit1<-stan(model_code=mamodel,
-		data=madata,
-		iter=10000,
-		chains=2,
-		init=mainits,
-		seed=434)
-print(fit1)
+transformed data {
+  real se0_c[n_m];
+  real se0_t[n_m];
+  real se_c[n_m];
+  real se_t[n_m];
 
-# fit classical model
-#complete.ma1<-metacont(n.e=nt,mean.e=mt1,sd.e=st1,
-#			    n.c=nc,mean.c=mc1,sd.c=sc1,
-#				comb.fixed=FALSE,comb.random=TRUE)
-#summary(complete.ma1)
+  // make standard errors
+  for(i in 1:n_m){
+    se0_c[i] = s0_c[i] / sqrt(n_mean_c[i]);
+    se0_t[i] = s0_t[i] / sqrt(n_mean_t[i]);
+    se_c[i] = s_c[i] / sqrt(n_mean_c[i]);
+    se_t[i] = s_t[i] / sqrt(n_mean_t[i]);
+  }
+}
+
+parameters {
+  real<lower=0,upper=1> rho; // correlation
+  real mu0; // mean at baseline, CRDS scale
+  real mu_c; // mean at endpoint in control group
+  real mu_t; // mean at endpoint in treatment group
+  real<lower=0> tau; // heterogeneity SD
+  real gamma_hdrs; // scaling from CRDS
+  real gamma_bid; // scaling from CRDS
+  real gamma_bdi; // scaling from CRDS
+  real gamma_ksadsp; // scaling from CRDS
+  real gamma_dacl; // scaling from CRDS
+  real u[m]; // random effect (CRDS scale)
+  real<lower=0> s_p[n_p]; // unknown SD in dichotomised studies
+}
+
+transformed parameters {
+  real delta; // time effect
+  real theta; // treatment effect
+  // means for each row (trials reporting means):
+  real mu_m_0[n_m]; 
+  real mu_m_c[n_m]; 
+  real mu_m_t[n_m];
+  // means for each row (trials reporting proportions):
+  real mu_p_0[n_p];
+  real mu_p_c[n_p];
+  real mu_p_t[n_p];
+  // probability of being a responder:
+  real p_c[n_p];
+  real p_t[n_p];
+
+  delta = mu_c-mu0;
+  theta = mu_t-mu_c;
+  for(i in 1:n_m) {
+    mu_m_0[i] = (cdrs_m[i] +
+                 (hdrs_m[i] * gamma_hdrs) +
+                 (bid_m[i] * gamma_bid) +
+                 (bdi_m[i] * gamma_bdi) +
+                 (ksadsp_m[i] * gamma_ksadsp) +
+                 (dacl_m[i] * gamma_dacl)) *
+                (mu0 + u[study_m[i]]);
+    mu_m_c[i] = (cdrs_m[i] + 
+                  (hdrs_m[i] * gamma_hdrs) +
+               (bid_m[i] * gamma_bid) +
+               (bdi_m[i] * gamma_bdi) +
+               (ksadsp_m[i] * gamma_ksadsp) +
+               (dacl_m[i] * gamma_dacl)) *
+              (mu_c + u[study_m[i]]);
+    mu_m_t[i] = (cdrs_m[i] + 
+                  (hdrs_m[i] * gamma_hdrs) +
+               (bid_m[i] * gamma_bid) +
+               (bdi_m[i] * gamma_bdi) +
+               (ksadsp_m[i] * gamma_ksadsp) +
+               (dacl_m[i] * gamma_dacl)) *
+              (mu_t + u[study_m[i]]);
+  }
+
+  for(i in 1:n_p) {
+    // predicted means for dichotomised trials
+    mu_p_0[i] = (cdrs_p[i] + 
+                  (hdrs_p[i] * gamma_hdrs) +
+               (bid_p[i] * gamma_bid) +
+               (bdi_p[i] * gamma_bdi) +
+               (ksadsp_p[i] * gamma_ksadsp) +
+               (dacl_p[i] * gamma_dacl)) *
+              (mu0 + u[study_p[i]]);
+    mu_p_c[i] = (cdrs_p[i] + 
+                  (hdrs_p[i] * gamma_hdrs) +
+               (bid_p[i] * gamma_bid) +
+               (bdi_p[i] * gamma_bdi) +
+               (ksadsp_p[i] * gamma_ksadsp) +
+               (dacl_p[i] * gamma_dacl)) *
+              (mu_c + u[study_p[i]]);
+    mu_p_t[i] = (cdrs_p[i] + 
+                  (hdrs_p[i] * gamma_hdrs) +
+               (bid_p[i] * gamma_bid) +
+               (bdi_p[i] * gamma_bdi) +
+               (ksadsp_p[i] * gamma_ksadsp) +
+               (dacl_p[i] * gamma_dacl)) *
+              (mu_t + u[study_p[i]]);
+
+    // probability of being a "responder" in each row (relative-ratio):
+    p_c[i] = Phi_approx(
+              (-cos(phi)*mu_p_c[i] - sin(phi)*mu_p_0[i]) / 
+              sqrt((cos(phi)*s_p[i])^2 + 
+                    (sin(phi)*s_p[i])^2 - 
+              2.0*sin(phi)*cos(phi)*rho*s_p[i]*s_p[i]));
+    p_t[i] = Phi_approx(
+              (-cos(phi)*mu_p_t[i] - sin(phi)*mu_p_0[i]) / 
+              sqrt((cos(phi)*s_p[i])^2 + 
+                    (sin(phi)*s_p[i])^2 - 
+              2.0*sin(phi)*cos(phi)*rho*s_p[i]*s_p[i]));
+  }
+}
+
+model {
+  // model priors:
+  rho ~ beta(4,4);
+  mu0 ~ normal(45,10);
+  mu_c ~ normal(40,10);
+  mu_t ~ normal(32,10);
+  tau ~ cauchy(0,5);
+  s_p ~ chi_square(8);
+  gamma_hdrs ~ uniform(0,5);
+  gamma_bid ~ uniform(0,5);
+  gamma_bdi ~ uniform(0,5);
+  gamma_ksadsp ~ uniform(0,5);
+  gamma_dacl ~ uniform(0,5);
+  
+  // random effect:
+  u ~ normal(0,tau);
+
+  // likelihoods for means
+  for(i in 1:n_m) {
+    m0_c[i] ~ normal(mu_m_0[i],se0_c[i]);
+    m0_t[i] ~ normal(mu_m_0[i],se0_t[i]);
+    m_c[i] ~ normal(mu_m_c[i],se_c[i]);
+    m_t[i] ~ normal(mu_m_t[i],se_t[i]);
+  }
+  // likelihoods for proportions
+  for(i in 1:n_p){
+    r_c[i] ~ binomial(n_risk_c[i],p_c[i]);
+    r_t[i] ~ binomial(n_risk_t[i],p_t[i]);
+  }
+  /*
+  For simplicity:
+  * we do not subtract the bottom of each scale
+  * we treat SDs as known perfectly
+  * we single-impute the missing endpoint SDs in Bernstein 1990 by LOCF
+  * we impute one SD for all times and arms in each dichotomised study
+  */
+}
+'
+
+stanmodel <- stan_model(model_code=stancode)
+# for checking the mean part of the model
+#datamat<-dplyr::filter(datamat,label!="Hughes1990")
+mm<-dplyr::filter(datamat,label!="Hughes1990")
+pm<-dplyr::filter(datamat,label=="Hughes1990")
+stanfit1 <- sampling(stanmodel,
+                     data=list(n_m=NROW(mm),
+                               n_p=NROW(pm),
+                               n=NROW(mm)+NROW(pm),
+                               m=14,
+                               study_m=mm$study_id,
+                               study_p=as.array(pm$study_id),
+                               n_mean_c=mm$n_mean_c,
+                               n_mean_t=mm$n_mean_t,
+                               m0_c=mm$m0_c,
+                               m_c=mm$m_c,
+                               m0_t=mm$m0_t,
+                               m_t=mm$m_t,
+                               s0_c=mm$s0_c,
+                               s_c=mm$s_c,
+                               s0_t=mm$s0_t,
+                               s_t=mm$s_t,
+                               cdrs_m=mm$CDRS,
+                               hdrs_m=mm$HDRS,
+                               bdi_m=mm$BDI,
+                               bid_m=mm$BID,
+                               ksadsp_m=mm$KSADSP,
+                               dacl_m=mm$DACL,
+                               cdrs_p=as.array(pm$CDRS),
+                               hdrs_p=as.array(pm$HDRS),
+                               bdi_p=as.array(pm$BDI),
+                               bid_p=as.array(pm$BID),
+                               ksadsp_p=as.array(pm$KSADSP),
+                               dacl_p=as.array(pm$DACL),
+                               phi=atan(-0.5),
+                               n_risk_c=as.array(pm$n_risk_c),
+                               n_risk_t=as.array(pm$n_risk_t),
+                               r_c=as.array(pm$r_c),
+                               r_t=as.array(pm$r_t)),
+                      chains=3,
+                      cores=3,
+                      iter=5000,
+                      warmup=1000,
+                      seed=313116)
+
+stansumm1<-summary(stanfit1)$summary
+# checking outputs:
+traceplot(stanfit1,pars=c('mu0',
+                          'delta',
+                          'theta'))
+traceplot(stanfit1,pars='u')
+traceplot(stanfit1,pars='s_p')
+traceplot(stanfit1,pars='p_c')
+traceplot(stanfit1,pars='p_t')
+traceplot(stanfit1,pars=c('gamma_hdrs',
+                          'gamma_bdi',
+                          'gamma_bid',
+                          'gamma_ksadsp',
+                          'gamma_dacl'))
+temp<-extract(stanfit1,permuted=FALSE)
+pairs(temp[,1,c(1:10,25,26)],cex=0.2,col='#00000020')
+
+# output stats: 
+stansumm1[c(1,2,5,6,7,8,9,10,25,26,27),c(1,4,8)]
+
+
+
+
+
+################################################
+# analysis 2, including Geller I & II as dichotomised
+mm<-dplyr::filter(datamat,
+                  label!="Hughes1990" &
+                    label!="Geller8992CDRS" &
+                    label!="Geller1990")
+pm<-dplyr::filter(datamat,label=="Hughes1990" |
+                    label=="Geller8992CDRS" |
+                    label=="Geller1990")
+rinits<-function(n_p) {
+  list(rho=runif(1,0.1,0.9),
+       mu0=runif(1,40,50),
+       mu_c=runif(1,35,45),
+       mu_t=runif(1,30,40),
+       tau=runif(1,5,10),
+       gamma_hdrs=runif(1,0.2,0.8),
+       gamma_bid=runif(1,0.2,0.8),
+       gamma_bdi=runif(1,0.2,0.8),
+       gamma_ksadsp=runif(1,0.2,0.8),
+       gamma_dacl=runif(1,0.2,0.8),
+       s_p=runif(n_p,5,15))
+}
+set.seed(718)
+stanfit2 <- sampling(stanmodel,
+                     data=list(n_m=NROW(mm),
+                               n_p=NROW(pm),
+                               n=NROW(mm)+NROW(pm),
+                               m=14,
+                               study_m=mm$study_id,
+                               study_p=as.array(pm$study_id),
+                               n_mean_c=mm$n_mean_c,
+                               n_mean_t=mm$n_mean_t,
+                               m0_c=mm$m0_c,
+                               m_c=mm$m_c,
+                               m0_t=mm$m0_t,
+                               m_t=mm$m_t,
+                               s0_c=mm$s0_c,
+                               s_c=mm$s_c,
+                               s0_t=mm$s0_t,
+                               s_t=mm$s_t,
+                               cdrs_m=mm$CDRS,
+                               hdrs_m=mm$HDRS,
+                               bdi_m=mm$BDI,
+                               bid_m=mm$BID,
+                               ksadsp_m=mm$KSADSP,
+                               dacl_m=mm$DACL,
+                               cdrs_p=as.array(pm$CDRS),
+                               hdrs_p=as.array(pm$HDRS),
+                               bdi_p=as.array(pm$BDI),
+                               bid_p=as.array(pm$BID),
+                               ksadsp_p=as.array(pm$KSADSP),
+                               dacl_p=as.array(pm$DACL),
+                               phi=atan(-0.5),
+                               n_risk_c=as.array(pm$n_risk_c),
+                               n_risk_t=as.array(pm$n_risk_t),
+                               r_c=as.array(pm$r_c),
+                               r_t=as.array(pm$r_t)),
+                     chains=3,
+                     cores=3,
+                     iter=5000,
+                     warmup=1000,
+                     seed=313118,
+                     init=list(rinits(NROW(pm)),
+                               rinits(NROW(pm)),
+                               rinits(NROW(pm))))
+# real u[m]; // random effect (CRDS scale)
+# real<lower=0> s_p[n_p]; // unknown SD in dichotomised studies
+
+stansumm2<-summary(stanfit2)$summary
+# checking outputs:
+traceplot(stanfit2,pars=c('mu0',
+                          'delta',
+                          'theta'))
+traceplot(stanfit2,pars='u')
+traceplot(stanfit2,pars='s_p')
+traceplot(stanfit2,pars='p_c')
+traceplot(stanfit2,pars='p_t')
+traceplot(stanfit2,pars=c('gamma_hdrs',
+                          'gamma_bdi',
+                          'gamma_bid',
+                          'gamma_ksadsp',
+                          'gamma_dacl'))
+temp<-extract(stanfit2,permuted=FALSE)
+pairs(temp[,1,c(1:10,25,26)],cex=0.2,col='#00000020')
+
+# output stats: 
+stansumm2[c(1,2,5,6,7,8,9,10,25,26),c(1,4,8)]
+
+# Geller posterior quantiles
+gellerpars<-c("mu_p_0[1]",
+              "mu_p_c[1]",
+              "mu_p_t[1]",
+              "mu_p_0[2]",
+              "mu_p_c[2]",
+              "mu_p_t[2]")
+temp<-extract(stanfit2,
+              permuted=TRUE,
+              pars=gellerpars)
+
+mean(temp[["mu_p_0[1]"]]<49.6)
+mean(temp[["mu_p_0[1]"]]<49.9)
+mean(temp[["mu_p_c[1]"]]<32.0)
+mean(temp[["mu_p_t[1]"]]<32.9)
+
+mean(temp[["mu_p_0[2]"]]<51.4)
+mean(temp[["mu_p_0[2]"]]<51.3)
+mean(temp[["mu_p_c[2]"]]<37.8)
+mean(temp[["mu_p_t[2]"]]<34.7)
+
 
